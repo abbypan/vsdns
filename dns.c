@@ -61,7 +61,8 @@ static void fill_header(char **writer)
     memset(head, 0, sizeof(*head));
     /* PID is unique enough to use it as ID: */
     head->id        = (unsigned short) htons(getpid());
-    head->a         = 0b00000001;  /* recursion desired */
+    /*head->a         = 0b00000001;  [> recursion desired <]*/
+    head->a         = 0b00000001; 
     head->questions = htons(1);    /* we have one question */
     *writer        += sizeof(*head);
 }
@@ -90,13 +91,13 @@ static void fill_question(char **writer, int query_type)
     *writer += sizeof(*q);
 }
 
+
 static int askudp(const char *s, const char *h, int qt, struct sockaddr_in *a)
-{  /* Create socket, fill in the question and send it. */
+{ 
     int sent;
-    int plen = sizeof(struct header) + strlen(h) + 2 +
-               sizeof(struct question_header);
-    char *packet       = malloc(plen);
-    char *writer       = packet;
+    int plen; 
+    char *packet= dns_query_packet(h, qt, 0, 0, &plen);
+
     int   sock         = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock < 0) {
         return 0;
@@ -105,28 +106,24 @@ static int askudp(const char *s, const char *h, int qt, struct sockaddr_in *a)
     a->sin_port        = htons(53);
     a->sin_addr.s_addr = inet_addr(s);
 
-    /* Socket created, now fill in the question. */
-    fill_header(&writer);
-    fill_name(&writer, h);
-    fill_question(&writer, qt);
 
-    /* Question is filled in, so send it. */
     sent = sendto(sock, packet, plen, 0, (struct sockaddr *) a, sizeof(*a));
     free(packet);
     if (sent != plen) {
         return 0;
     }
+
     return sock;
 }
+
+
+
 
 static int asktcp(const char *s, const char *h, int qt)
 {  /* Create socket, fill in the question and send it. */
     struct sockaddr_in a;
     int sent;
-    int plen = sizeof(struct header) + strlen(h) + 4 +
-               sizeof(struct question_header);
-    char *packet = malloc(plen);
-    char *writer = packet;
+
     int   sock   = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock < 0) {
         return 0;
@@ -140,11 +137,8 @@ static int asktcp(const char *s, const char *h, int qt)
 
     /* Socket created, now fill in the question.
        Note the difference from UDP: TCP has size in the start. */
-    writer += 2;
-    fill_header(&writer);
-    fill_name(&writer, h);
-    fill_question(&writer, qt);
-    *((unsigned short *) packet) = htons(writer - packet - 2);
+    int plen;
+    char *packet= dns_query_packet(h, qt, 1, 0, &plen);
 
     /* Question is filled in, so send it. */
     sent = write(sock, packet, plen);
@@ -176,6 +170,8 @@ static char *gettcp(int sock)
     close(sock);
     return packet;
 }
+
+
 
 static char *get(const char *s, const char *h, int qt)
 { /* Get response in UDP, if it is truncated do it in TCP. */
@@ -390,3 +386,88 @@ void dns_free(struct dns_answers *answers)
         free(answers);
     }
 }
+
+
+char * dns_query_packet(const char *h, int qt, int is_tcp, int enable_dnssec, int *plen)
+{  
+    int prefix_len = 0;
+    if(is_tcp==1){
+        prefix_len = 2;
+    }
+
+    int opt_len = 0;
+    char opt[] = { 0x00, 0x00, 0x29, 0x04, 0xd0, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00 };
+    if(enable_dnssec){
+        opt_len = sizeof(opt);
+    }
+
+    *plen = sizeof(struct header) + strlen(h) + 2 + prefix_len +
+        sizeof(struct question_header) + opt_len;
+    char *packet       = malloc(*plen);
+    char *writer       = packet;
+
+    writer+=prefix_len;
+    fill_header(&writer);
+    fill_name(&writer, h);
+    fill_question(&writer, qt);
+
+    if(enable_dnssec){
+        packet[5] = 0x20; 
+        packet[13] = 0x01;
+        memcpy(writer, opt, opt_len);
+        writer += opt_len;
+    }
+
+    if(is_tcp){
+        *((unsigned short *) packet) = htons(writer - packet - 2);
+    }
+
+    return packet;
+}
+
+
+char *dns_get_tcp_query(char *s, int port, char *query_packet, int query_plen, int *plen)
+{ 
+    struct sockaddr_in a;
+    int sent;
+
+    int   sock   = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock < 0) {
+        return 0;
+    }
+    a.sin_family       = AF_INET;
+    a.sin_port         = htons(port);
+    a.sin_addr.s_addr  = inet_addr(s);
+    if (connect(sock, (struct sockaddr *) &a, sizeof(a))) {
+        return 0;
+    }
+
+    sent = write(sock, query_packet, query_plen);
+    if (sent != query_plen) {
+        return 0;
+    }
+
+    short size;
+    char *packet;
+    if (read(sock, &size, 2) < 0) {
+        close(sock);
+        return 0;
+    }
+
+    size   = ntohs(size);
+    
+    *plen = size;
+
+    packet = malloc(size);
+
+    if (read(sock, packet, size) < 0) {
+        close(sock);
+        free(packet);
+        return 0;
+    }
+
+    close(sock);
+
+    return packet;
+}
+

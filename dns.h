@@ -7,8 +7,11 @@ enum {  /* Some of DNS types: */
     dns_type_cname = 5,
     dns_type_mx    = 15,
     dns_type_txt   = 16,
-    dns_type_srv   = 33
+    dns_type_srv   = 33, 
     /* If you need other one -- add it here. */
+    dns_type_aaaa     = 28,
+    dns_type_ns     = 2,
+    dns_type_tlsa     = 52
 };
 
 /* Answers as linked list. */
@@ -39,6 +42,10 @@ int   dns_srv_weight(void *data);
 struct dns_answers *dns_get(const char *server, const char *host, int query);
 
 void dns_free(struct dns_answers *answers);
+
+char * dns_query_packet(const char *h, int qt, int is_tcp, int enable_dnssec, int *plen);
+
+char *dns_get_tcp_query(char *s, int port, char *query_packet, int query_plen, int *plen);
 
 
 #endif
